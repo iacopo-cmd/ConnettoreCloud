@@ -1,18 +1,23 @@
 """Connettore cloud – server MCP in SOLA LETTURA: Claude chiede «cosa sta facendo questa macchina?».
 
-Indirizzo: <base>/c/<codice>/mcp  (il codice dice chi sei; nel file dei codici c'è solo l'impronta sha256).
+Indirizzi: <base>/mcp con OAuth (claude.ai: si incolla il proprio codice nella pagina /accedi) oppure
+<base>/c/<codice>/mcp (Claude Code e client senza OAuth). Nel file dei codici c'è solo l'impronta sha256.
 Versione 1: profilo «root» = vede tutto. Nessuno strumento cambia, avvia, ferma o cancella niente.
 Fonti: dati/stato-host.json (raccoglitore root, di base ogni 5 minuti: anche i container Docker),
 journald montato in sola lettura, /proc dell'host (pid: host), LLM locale via http.
 """
-import fnmatch, hashlib, json, os, re, subprocess, time, urllib.request
+import fnmatch, json, os, re, subprocess, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 
 import psutil
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse
 
 from app.filtri import pulisci, taglia
+from app.oauth import AMBITO, Fornitore, impronta, pagina
 
 NOME_MACCHINA = os.environ.get("NOME_MACCHINA") or os.uname().nodename
 STATO = os.environ.get("STATO_HOST", "/dati/stato-host.json")
@@ -25,12 +30,32 @@ NOMI_HOST = [h for h in os.environ.get("NOMI_HOST", "127.0.0.1,localhost").split
 MAX_RIGHE = 200
 OGNI_MINUTI = int(os.environ.get("RACCOLTA_OGNI_MINUTI") or 5)
 
+
+def _indirizzo_pubblico() -> str:
+    """INDIRIZZO_PUBBLICO nel .env, altrimenti https://<primo nome non locale>:<porta> se c'è il certificato."""
+    if os.environ.get("INDIRIZZO_PUBBLICO"):
+        return os.environ["INDIRIZZO_PUBBLICO"].rstrip("/")
+    nomi = [h for h in NOMI_HOST if not h.startswith(("127.", "localhost", "::1"))]
+    if os.environ.get("TLS_CERT") and nomi:
+        return f"https://{nomi[0]}" + ("" if PORTA == 443 else f":{PORTA}")
+    return f"http://127.0.0.1:{PORTA}"
+
+
+BASE = _indirizzo_pubblico()
+FORNITORE = Fornitore(os.environ.get("OAUTH_DATI", "/dati/oauth.json"), CODICI, BASE)
+
 ISTRUZIONI = f"""Connettore cloud della macchina «{NOME_MACCHINA}», solo lettura.
 Per una domanda generica («come sta», «cosa sta facendo», «chi c'è dentro») usa prima `riassunto`.
 Orari in UTC. Segreti, mail e telefoni nell'output sono nascosti apposta («nascosto»)."""
 
 mcp = FastMCP("Connettore cloud", instructions=ISTRUZIONI, host=HOST, port=PORTA,
               stateless_http=True, json_response=True,
+              auth_server_provider=FORNITORE,
+              auth=AuthSettings(issuer_url=BASE, resource_server_url=f"{BASE}/mcp",
+                                client_registration_options=ClientRegistrationOptions(
+                                    enabled=True, valid_scopes=[AMBITO], default_scopes=[AMBITO]),
+                                revocation_options=RevocationOptions(enabled=True),
+                                required_scopes=[AMBITO], validate_token_resource=True),
               transport_security=TransportSecuritySettings(
                   enable_dns_rebinding_protection=True,
                   allowed_hosts=[f"{h}:{PORTA}" for h in NOMI_HOST] + [f"{h}:*" for h in NOMI_HOST] + NOMI_HOST,
@@ -40,16 +65,20 @@ mcp = FastMCP("Connettore cloud", instructions=ISTRUZIONI, host=HOST, port=PORTA
 # ---------------------------------------------------------------- chi chiama, registro, uscita
 
 def _chi(ctx: Context | None) -> dict:
+    """Chi chiama: dal token (OAuth o /c/<codice>) all'impronta del codice, e da lì alla voce in key/codici.json."""
     try:
-        h = ctx.request_context.request.headers
-        try:
-            permessi = json.loads(h.get("x-connettore-permessi") or "{}")
-        except ValueError:
-            permessi = {}
-        return {"nome": h.get("x-connettore-chi", "?"), "profilo": h.get("x-connettore-profilo", "?"),
-                "ip": h.get("x-connettore-ip", ""), "permessi": permessi}
+        req = ctx.request_context.request
     except Exception:
-        return {"nome": "locale", "profilo": "root", "ip": ""}   # stdio / prove dirette
+        return {"nome": "locale", "profilo": "root", "ip": "", "permessi": {}}   # stdio / prove dirette
+    ip = req.headers.get("x-connettore-ip", "")
+    utente = req.scope.get("user")
+    tok = getattr(utente, "access_token", None)
+    voce = FORNITORE.voce_codice(tok.subject) if tok and tok.subject else None
+    if not voce:
+        return {"nome": "?", "profilo": "?", "ip": ip, "permessi": {}}
+    permessi = {k: voce.get(k) for k in ("container", "servizi", "macchina") if k in voce}
+    return {"nome": voce["nome"], "profilo": voce["profilo"], "ip": ip, "permessi": permessi,
+            "via": "oauth" if tok.client_id != "codice-diretto" else "codice"}
 
 
 def _registra(voce: dict):
@@ -92,7 +121,7 @@ def _uscita(ctx, strumento, argomenti, f, ristretto=None):
         r, esito = f"Errore: {type(e).__name__}: {e}", "errore"
     testo = r if isinstance(r, str) else json.dumps(r, ensure_ascii=False, indent=1, default=str)
     testo = taglia(pulisci(testo))
-    _registra({"chi": chi["nome"], "ip": chi["ip"], "strumento": strumento, "argomenti": argomenti,
+    _registra({"chi": chi["nome"], "via": chi.get("via", ""), "ip": chi["ip"], "strumento": strumento, "argomenti": argomenti,
                "esito": esito, "ms": int((time.time() - t0) * 1000), "caratteri": len(testo)})
     return testo
 
@@ -544,20 +573,44 @@ def llm(ctx: Context) -> str:
     return _uscita(ctx, "llm", {}, _llm)
 
 
-# ---------------------------------------------------------------- codici e avvio
+# ---------------------------------------------------------------- pagina dove si incolla il codice (OAuth)
 
-def _carica_codici() -> dict:
-    try:
-        with open(CODICI) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+def _rifiutato(ip, percorso):
+    print(json.dumps({"connettore": {"rifiutato": ip, "percorso": re.sub(r"/c/[^/]*", "/c/…", percorso)[:60]}}), flush=True)
+
+
+@mcp.custom_route("/accedi", methods=["GET", "POST"])
+async def accedi(request: Request):
+    testo = "Incolla il tuo codice del connettore per collegare Claude a questa macchina (sola lettura)."
+    if request.method == "GET":
+        rid = request.query_params.get("r", "")
+        if not FORNITORE.richiesta(rid):
+            return HTMLResponse(pagina(NOME_MACCHINA, "Richiesta scaduta o non valida: riparti da claude.ai."), 400)
+        return HTMLResponse(pagina(NOME_MACCHINA, testo, rid=rid))
+    corpo = (await request.body())[:4096].decode(errors="replace")
+    campi = {k: v[0] for k, v in urllib.parse.parse_qs(corpo).items()}
+    rid, codice = campi.get("r", ""), campi.get("codice", "")
+    ip = request.headers.get("x-connettore-ip", "")
+    ritorno, chi = FORNITORE.completa(rid, codice)
+    if not ritorno:
+        if chi == "Codice sbagliato o spento.":
+            _rifiutato(ip, "/accedi")            # conta per fail2ban come un codice sbagliato
+        return HTMLResponse(pagina(NOME_MACCHINA, testo, errore=chi, rid=rid if FORNITORE.richiesta(rid) else ""), 403)
+    _registra({"chi": chi, "via": "oauth", "ip": ip, "strumento": "(collegamento OAuth)", "esito": "ok"})
+    return RedirectResponse(ritorno, status_code=302)
+
+
+# ---------------------------------------------------------------- avvio
+
+PERCORSI_OAUTH = ("/mcp", "/mcp/", "/authorize", "/token", "/register", "/revoke", "/accedi")
 
 
 def app():
     interna = mcp.streamable_http_app()
-    codici = _carica_codici()
-    sbagliati = {}
+
+    async def risposta_404(send):
+        await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
+        await send({"type": "http.response.body", "body": b"404"})
 
     async def entrata(scope, receive, send):
         if scope["type"] == "lifespan":
@@ -566,33 +619,27 @@ def app():
             return
         ip = (scope.get("client") or ("?", 0))[0]
         percorso = scope.get("path", "")
-        if percorso.startswith("/.well-known/") or percorso in ("/favicon.ico", "/robots.txt"):
-            # claude.ai cerca l'OAuth prima di collegarsi: 404 senza contarlo come errore (niente fail2ban),
-            # e senza scrivere il percorso (può contenere il codice)
-            await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
-            await send({"type": "http.response.body", "body": b"404"})
-            return
-        m = re.fullmatch(r"/c/([A-Za-z0-9_-]{16,128})/mcp/?", percorso)
-        voce = codici.get(hashlib.sha256(m.group(1).encode()).hexdigest()) if m else None
-        if not voce or voce.get("spento"):
-            sbagliati[ip] = sbagliati.get(ip, 0) + 1
-            print(json.dumps({"connettore": {"rifiutato": ip, "percorso": re.sub(r"/c/[^/]*", "/c/…", percorso)[:60]}}), flush=True)
-            await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
-            await send({"type": "http.response.body", "body": b"404"})
-            return
         intestazioni = [(k, v) for k, v in scope["headers"] if not k.startswith(b"x-connettore-")]
-        permessi = {k: voce.get(k) for k in ("container", "servizi", "macchina") if k in voce}
-        intestazioni += [(b"x-connettore-chi", voce["nome"].encode()), (b"x-connettore-profilo", voce["profilo"].encode()),
-                         (b"x-connettore-ip", ip.encode()),
-                         (b"x-connettore-permessi", json.dumps(permessi, ensure_ascii=True).encode())]
-        scope = {**scope, "path": "/mcp", "raw_path": b"/mcp", "headers": intestazioni}
-        return await interna(scope, receive, send)
+        intestazioni.append((b"x-connettore-ip", ip.encode()))
+        if percorso in ("/favicon.ico", "/robots.txt"):
+            return await risposta_404(send)
+        if percorso.startswith("/.well-known/") or percorso in PERCORSI_OAUTH:
+            # OAuth e metadati: li gestisce la libreria (niente fail2ban sui 404 di scoperta)
+            return await interna({**scope, "headers": intestazioni}, receive, send)
+        m = re.fullmatch(r"/c/([A-Za-z0-9_-]{16,128})/mcp/?", percorso)
+        if not m or not FORNITORE.voce_codice(impronta(m.group(1))):
+            _rifiutato(ip, percorso)
+            return await risposta_404(send)
+        # /c/<codice>/mcp: il codice diventa un token interno, poi passa dallo stesso controllo dell'OAuth
+        intestazioni = [(k, v) for k, v in intestazioni if k != b"authorization"]
+        intestazioni.append((b"authorization", f"Bearer {FORNITORE.token_interno(m.group(1))}".encode()))
+        return await interna({**scope, "path": "/mcp", "raw_path": b"/mcp", "headers": intestazioni}, receive, send)
 
     return entrata
 
 
 if __name__ == "__main__":
     import uvicorn
-    # access_log spento: l'indirizzo contiene il codice. Le chiamate le registra _registra(), senza codice.
+    # access_log spento: gli indirizzi possono contenere il codice. Le chiamate le registra _registra(), senza codice.
     uvicorn.run(app(), host=HOST, port=PORTA, server_header=False, proxy_headers=False, access_log=False,
                 ssl_certfile=os.environ.get("TLS_CERT") or None, ssl_keyfile=os.environ.get("TLS_KEY") or None)

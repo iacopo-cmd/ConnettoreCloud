@@ -23,6 +23,8 @@ COME È FATTO
 - Il server MCP in un container non root, file system in sola lettura, senza capability, senza socket Docker.
 - Indirizzo /c/<codice>/mcp: il codice dice chi sei, sul disco c'è solo la sua impronta. Codice sbagliato = 404,
   pronto per fail2ban. Filtro dei segreti su tutto quello che esce. Ogni chiamata registrata, senza il codice.
+- OAuth per claude.ai: il connettore fa da server OAuth da solo; nella sua pagina si incolla il proprio codice.
+  claude.ai vuole la porta 443. Per Claude Code resta anche il codice nell'indirizzo.
 - Profili: root (vede tutto) e ristretto (solo i container e i servizi assegnati, i loro log e la salute generale
   della macchina).
 - Si installa da solo: git clone e installa/installa-tutto.sh. Parte solo su 127.0.0.1; l'uscita pubblica in https

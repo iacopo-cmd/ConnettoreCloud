@@ -54,24 +54,30 @@ telefoni. Ogni chiamata è registrata in `dati/registro.jsonl` e nel journal (se
   d'ambiente), memorie. Scrive `dati/stato-host.json` e `dati/memorie.json`.
 - `app/`: il server MCP in un container non root, file system in sola lettura, nessuna capability, `pid: host`,
   journal in sola lettura. Il container non ha il socket Docker e non apre altre porte.
-- Indirizzo: `<base>/c/<codice>/mcp`. Il codice dice chi sei; in `key/codici.json` c'è solo la sua impronta sha256.
-  Codice sbagliato = 404 e una riga `rifiutato` nel journal per fail2ban. Controllo dell'Host (DNS rebinding).
+- Due modi di entrare, stessi codici e stessi profili:
+  - **OAuth** (claude.ai e app): URL `<base>/mcp`. claude.ai si registra da solo, apre la pagina `/accedi` del
+    connettore, lì si incolla il proprio codice e claude.ai riceve un token (1 giorno, rinnovo 60 giorni).
+  - **Codice nell'indirizzo** (Claude Code e client senza OAuth): `<base>/c/<codice>/mcp`.
+- Il token porta l'impronta del codice: spegnere un codice ferma subito anche i suoi token. Sul disco
+  (`key/codici.json`, `dati/oauth.json`) ci sono solo impronte. Codice sbagliato (indirizzo o pagina `/accedi`) =
+  una riga `rifiutato` nel journal per fail2ban. Controllo dell'Host (DNS rebinding) e del destinatario del token.
 - Codici: vedi «Profili». Per spegnerne uno: `"spento": true` sulla sua voce in `key/codici.json`, poi
   `docker restart connettore-cloud`.
 
 ## Uscita pubblica (la decide l'amministratore)
 
-claude.ai si collega dal cloud di Anthropic: serve un https pubblico.
+claude.ai si collega dal cloud di Anthropic: serve un https pubblico **sulla porta 443** (verso altre porte claude.ai
+non esce) e l'OAuth (c'è già).
 
 1. Nel `.env`: `ASCOLTA_HOST=0.0.0.0`, `ASCOLTA_PORTA=<porta>`, `NOMI_HOST=<dominio>,127.0.0.1,localhost`,
-   `TLS_CERT=/key/tls/<dominio>.crt`, `TLS_KEY=/key/tls/<dominio>.key`.
+   `TLS_CERT=/key/tls/<dominio>.crt`, `TLS_KEY=/key/tls/<dominio>.key` (e, se serve, `INDIRIZZO_PUBBLICO`).
 2. Certificato e chiave in `key/tls/` (dell'utente `CONNETTORE_UID`, permessi 400).
 3. fail2ban: `installa/fail2ban/connettore-cloud.conf` in `/etc/fail2ban/filter.d/`, e
    `installa/fail2ban/connettore-cloud.local.esempio` in `/etc/fail2ban/jail.d/connettore-cloud.local` con porta e
    IP da non bannare (**anche l'IP pubblico della macchina stessa**: le prove dal link pubblico partono da lì).
 4. Rilanciare `installa/installa-tutto.sh`: le prove vanno sul dominio vero.
-5. In claude.ai: Impostazioni → Connettori → «Aggiungi connettore personalizzato», URL
-   `https://<dominio>:<porta>/c/<codice>/mcp`.
+5. In claude.ai: Impostazioni → Connettori → «Aggiungi connettore personalizzato», URL `https://<dominio>/mcp`
+   (niente codice nell'URL, niente OAuth Client ID). claude.ai apre la pagina del connettore: incolla il codice.
 
 ## Profili
 

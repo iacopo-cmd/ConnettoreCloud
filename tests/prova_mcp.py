@@ -60,7 +60,7 @@ asyncio.run(main())
 base = URL.split("/c/")[0]
 for nome, url, atteso in [("codice sbagliato", base + "/c/" + "x" * 43 + "/mcp", 404),
                           ("codice corto", base + "/c/abc/mcp", 404),
-                          ("senza codice", base + "/mcp", 404),
+                          ("senza codice né token (chiede l'OAuth)", base + "/mcp", 401),
                           ("radice", base + "/", 404)]:
     try:
         urllib.request.urlopen(urllib.request.Request(url, data=b"{}", headers={"content-type": "application/json"}), timeout=5)
@@ -69,13 +69,13 @@ for nome, url, atteso in [("codice sbagliato", base + "/c/" + "x" * 43 + "/mcp",
         c = e.code
     esito(f"{nome} → {atteso}", c == atteso, str(c))
 codice = URL.split("/c/")[1].split("/")[0]
-for scoperta in ["/.well-known/oauth-protected-resource", f"/.well-known/oauth-protected-resource/c/{codice}/mcp",
-                 "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"]:
+for scoperta, atteso in [("/.well-known/oauth-protected-resource/mcp", 200), ("/.well-known/oauth-authorization-server", 200),
+                         (f"/.well-known/oauth-protected-resource/c/{codice}/mcp", 404), ("/.well-known/openid-configuration", 404)]:
     try:
         urllib.request.urlopen(base + scoperta, timeout=5); c = 200
     except urllib.error.HTTPError as e:
         c = e.code
-    esito(f"scoperta OAuth {scoperta.split('/c/')[0]} → 404", c == 404, str(c))
+    esito(f"scoperta OAuth {scoperta.split('/c/')[0]} → {atteso}", c == atteso, str(c))
 req = urllib.request.Request(URL, data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
                              headers={"content-type": "application/json", "accept": "application/json, text/event-stream", "host": "cattivo.example"})
 try:
