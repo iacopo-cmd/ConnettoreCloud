@@ -1,0 +1,14 @@
+# fail2ban - jail del Connettore cloud. Copia in /etc/fail2ban/jail.d/connettore-cloud.local e metti la porta del .env.
+# 5 codici sbagliati (o indirizzi inesistenti) in 10 minuti = 1 giorno fuori.
+# @IP_DA_IGNORARE@ = IP pubblico della macchina stessa (le prove dal link pubblico partono da lì) e IP fidati.
+# Sbloccare: fail2ban-client set connettore-cloud unbanip IP
+[connettore-cloud]
+enabled  = true
+backend  = systemd
+journalmatch = CONTAINER_NAME=connettore-cloud
+filter   = connettore-cloud
+maxretry = 5
+findtime = 10m
+bantime  = 1d
+port     = @PORTA@
+ignoreip = %(known/ignoreip)s 127.0.0.1/8 ::1 @IP_DA_IGNORARE@

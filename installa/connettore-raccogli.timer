@@ -1,0 +1,11 @@
+[Unit]
+Description=Connettore cloud: raccoglitore ogni @OGNI@ minuti al secondo @SECONDO@
+
+[Timer]
+# Al secondo @SECONDO@, non allo scoccare del minuto: così non si accavalla con le cose che partono al minuto.
+OnCalendar=*:0/@OGNI@:@SECONDO@
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,38 @@
+Connettore cloud - versione 0.0.2 alpha
+
+ALPHA. Idea nata il 14/11/2026 e, lo stesso giorno, il primo codice scritto per provare se il connettore va.
+Funziona sulla prima macchina dove è stato provato, ma è tutto da rifinire: usatelo per provare, non come cosa finita.
+
+L'IDEA
+Un connettore (server MCP) da mettere su ogni macchina Linux, reale o con Docker, così Claude (la chat, l'app,
+Claude Code) può rispondere a domande come "come sta quella macchina?", "cosa sta facendo?", "chi c'è dentro?".
+Sola lettura: guarda e racconta, non tocca niente.
+
+COSA C'È IN QUESTA ALPHA (13 strumenti)
+- riassunto: il quadro completo in una volta (salute, container, servizi falliti, chi è dentro, Claude Code lanciati
+  e ultimi accessi, utenti, lavori, LLM, porte, avvisi)
+- utenti: tutti gli utenti veri della macchina, con accessi, processi, gruppi potenti, Claude, memorie
+- accessi: chi è dentro adesso e accessi SSH delle ultime 24 ore
+- claude_e_lavori, claude_sessioni: Claude Code lanciato e ultimi accessi da terminale
+- memorie: le memorie di Claude Code degli utenti
+- container, log, servizi, processi, risorse, porte, llm
+
+COME È FATTO
+- Un raccoglitore sull'host, come root, con un timer (di base ogni 5 minuti al secondo 15, per non accavallarsi con
+  le cose che partono al minuto). Solo lettura, solo libreria standard di Python.
+- Il server MCP in un container non root, file system in sola lettura, senza capability, senza socket Docker.
+- Indirizzo /c/<codice>/mcp: il codice dice chi sei, sul disco c'è solo la sua impronta. Codice sbagliato = 404,
+  pronto per fail2ban. Filtro dei segreti su tutto quello che esce. Ogni chiamata registrata, senza il codice.
+- Si installa da solo: git clone e installa/installa-tutto.sh. Parte solo su 127.0.0.1; l'uscita pubblica in https
+  si decide a mano (vedi LEGGIMI.md).
+
+COSA MANCA (prossime versioni)
+- Profili ristretti: codici che vedono solo una parte della macchina (per esempio solo certi container).
+- Prove su più macchine e più distribuzioni.
+- Uso dentro una VPN per le macchine che non devono stare su internet.
+- Versione 2: strumenti che scrivono (riavviare un servizio...), ognuno con conferma esplicita. Solo dopo che la
+  sola lettura è provata bene.
+
+STORIA DELLE VERSIONI
+0.0.1 (14/11/2026): l'idea, scritta a voce. Niente costruito.
+0.0.2 alpha (14/11/2026): primo codice, provato su una macchina, si installa da solo dal git.

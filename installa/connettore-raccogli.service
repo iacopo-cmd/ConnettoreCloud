@@ -1,0 +1,9 @@
+[Unit]
+Description=Connettore cloud: raccoglitore (sola lettura) di lavori, Claude, SSH, servizi, porte, dischi
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 @CARTELLA@/raccogli/raccogli.py @CARTELLA@/dati/stato-host.json
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=50

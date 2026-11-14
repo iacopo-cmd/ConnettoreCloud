@@ -1,0 +1,32 @@
+# Connettore cloud (versione 1, sola lettura).
+#   cp .env.esempio .env   (e sistemalo per la macchina)
+#   docker compose up -d --build
+# Il raccoglitore (root, timer systemd connettore-raccogli) scrive dati/stato-host.json (di base ogni 5 minuti al secondo 15), container
+# Docker compresi: il connettore non ha il socket Docker.
+
+services:
+  connettore:
+    build: {context: ., dockerfile: installa/Dockerfile}
+    image: connettore-cloud:attuale
+    container_name: connettore-cloud
+    restart: unless-stopped
+    network_mode: host          # vede l'LLM locale su 127.0.0.1
+    pid: host                   # processi dell'host, in sola lettura
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "${CONNETTORE_UID:-10110}:${CONNETTORE_UID:-10110}"
+    group_add: ["${GRUPPO_JOURNAL:-999}"]     # systemd-journal: legge i log
+    env_file: [.env]
+    volumes:
+      - ./dati:/dati
+      - ./key/codici.json:/key/codici.json:ro
+      - ./key/tls:/key/tls:ro            # certificato per l'https diretto (se TLS_CERT nel .env)
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    logging: {driver: journald, options: {tag: "{{.Name}}"}}
