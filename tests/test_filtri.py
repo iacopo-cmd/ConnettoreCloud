@@ -25,7 +25,7 @@ def test_segreti_nascosti():
 
 
 def test_testo_normale_intatto():
-    for t in ["orariocrew1-web: running, 2h 3m, salute healthy", "Disco /: 138.3/453.7 GB (33%)",
+    for t in ["app1-web: running, 2h 3m, salute healthy", "Disco /: 138.3/453.7 GB (33%)",
               "2026-11-14T17:49:23+00:00 entrato mario", "/srv/progetto/app/main.py:12",
               "tcp 0.0.0.0:8443 python3"]:
         assert pulisci(t) == t, (t, pulisci(t))
