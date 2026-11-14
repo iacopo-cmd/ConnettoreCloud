@@ -56,8 +56,8 @@ telefoni. Ogni chiamata è registrata in `dati/registro.jsonl` e nel journal (se
   journal in sola lettura. Il container non ha il socket Docker e non apre altre porte.
 - Indirizzo: `<base>/c/<codice>/mcp`. Il codice dice chi sei; in `key/codici.json` c'è solo la sua impronta sha256.
   Codice sbagliato = 404 e una riga `rifiutato` nel journal per fail2ban. Controllo dell'Host (DNS rebinding).
-- Codici: `python3 installa/codice-nuovo.py <nome> [profilo]`, poi `docker restart connettore-cloud`. Per spegnerne
-  uno: `"spento": true` sulla sua voce in `key/codici.json`.
+- Codici: vedi «Profili». Per spegnerne uno: `"spento": true` sulla sua voce in `key/codici.json`, poi
+  `docker restart connettore-cloud`.
 
 ## Uscita pubblica (la decide l'amministratore)
 
@@ -75,5 +75,11 @@ claude.ai si collega dal cloud di Anthropic: serve un https pubblico.
 
 ## Profili
 
-Alpha: solo `root` (vede tutto, tutti gli utenti). Profili ristretti e strumenti che scrivono (con conferma)
-vengono dopo.
+- **root**: vede tutto, tutti gli utenti. `python3 installa/codice-nuovo.py <nome>`
+- **ristretto**: vede solo i container (e i servizi systemd) che gli assegni, i loro log, e la salute generale della
+  macchina (CPU, RAM, dischi; si toglie con `--senza-macchina`). Strumenti: `riassunto`, `container`, `log`,
+  `risorse`; tutti gli altri rispondono «non può usare». Niente percorsi dell'host nel dettaglio dei container.
+  `python3 installa/codice-nuovo.py <nome> ristretto --container 'app1-*' [--servizi 'nginx.service']`
+- Dopo un codice nuovo: `docker restart connettore-cloud`. Prova di un codice ristretto: `tests/prova_ristretto.py`.
+
+Strumenti che scrivono (con conferma) vengono dopo.

@@ -5,7 +5,7 @@ Versione 1: profilo «root» = vede tutto. Nessuno strumento cambia, avvia, ferm
 Fonti: dati/stato-host.json (raccoglitore root, di base ogni 5 minuti: anche i container Docker),
 journald montato in sola lettura, /proc dell'host (pid: host), LLM locale via http.
 """
-import hashlib, json, os, re, subprocess, time, urllib.request
+import fnmatch, hashlib, json, os, re, subprocess, time, urllib.request
 from datetime import datetime, timezone
 
 import psutil
@@ -42,8 +42,12 @@ mcp = FastMCP("Connettore cloud", instructions=ISTRUZIONI, host=HOST, port=PORTA
 def _chi(ctx: Context | None) -> dict:
     try:
         h = ctx.request_context.request.headers
+        try:
+            permessi = json.loads(h.get("x-connettore-permessi") or "{}")
+        except ValueError:
+            permessi = {}
         return {"nome": h.get("x-connettore-chi", "?"), "profilo": h.get("x-connettore-profilo", "?"),
-                "ip": h.get("x-connettore-ip", "")}
+                "ip": h.get("x-connettore-ip", ""), "permessi": permessi}
     except Exception:
         return {"nome": "locale", "profilo": "root", "ip": ""}   # stdio / prove dirette
 
@@ -58,14 +62,31 @@ def _registra(voce: dict):
     print(json.dumps({"connettore": voce}, ensure_ascii=False), flush=True)   # anche nel journal
 
 
-def _uscita(ctx, strumento, argomenti, f):
+STRUMENTI_RISTRETTI = ("riassunto", "container", "log", "risorse")
+
+
+def _puo_container(perm: dict, nome: str) -> bool:
+    return any(fnmatch.fnmatchcase(nome, g) for g in perm.get("container", []))
+
+
+def _puo_unita(perm: dict, unita: str) -> bool:
+    return any(fnmatch.fnmatchcase(unita, g) for g in perm.get("servizi", []))
+
+
+def _uscita(ctx, strumento, argomenti, f, ristretto=None):
+    """f() per root; ristretto(permessi) per i codici col profilo «ristretto» (vedono solo il loro)."""
     chi = _chi(ctx)
     t0 = time.time()
-    if chi["profilo"] != "root":
+    if chi["profilo"] == "root":
+        esegui = f
+    elif chi["profilo"] == "ristretto" and ristretto is not None:
+        esegui = lambda: ristretto(chi.get("permessi") or {})
+    else:
         _registra({"chi": chi["nome"], "ip": chi["ip"], "strumento": strumento, "esito": "non permesso"})
-        return "Questo codice non ha ancora il permesso per questo strumento (versione 1: solo root)."
+        return ("Questo codice non può usare questo strumento. Può usare: " + ", ".join(STRUMENTI_RISTRETTI)
+                + " (solo sui container che gli sono stati assegnati).")
     try:
-        r = f()
+        r = esegui()
         esito = "ok"
     except Exception as e:
         r, esito = f"Errore: {type(e).__name__}: {e}", "errore"
@@ -197,6 +218,54 @@ def _llm() -> dict:
 
 
 # ---------------------------------------------------------------- strumenti
+
+def _container_ristretti(perm, dettaglio_per=None):
+    cs = [c for c in _containers(dettaglio_per) if _puo_container(perm, c["nome"])]
+    for c in cs:
+        c.pop("montaggi", None)        # percorsi dell'host: non servono a chi vede solo il suo
+    return cs
+
+
+def _riassunto_ristretto(perm):
+    righe = [f"# {NOME_MACCHINA} — {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC (vista ristretta)"]
+    avvisi = []
+    if perm.get("macchina"):
+        r = _risorse()
+        righe.append(f"\n## Salute della macchina\nCPU {r['cpu_uso_pct']}% su {r['cpu_core']} core, carico "
+                     f"{r['carico_1_5_15']}; RAM {r['ram_gb']['usata']}/{r['ram_gb']['totale']} GB ({r['ram_gb']['uso_pct']}%)")
+        for d in _stato_host().get("dischi", []):
+            if d["montato_su"] == "/":
+                righe.append(f"Disco: {d['uso_pct']}% usato, liberi {d['libero_gb']} GB")
+                if d["uso_pct"] >= 85:
+                    avvisi.append(f"disco al {d['uso_pct']}%")
+    cs = _container_ristretti(perm)
+    righe.append(f"\n## I tuoi container: {sum(1 for c in cs if c['stato'] == 'running')} accesi su {len(cs)}")
+    for c in cs:
+        righe.append(f"- {c['nome']}: {c['stato']}, {c['da']}, salute {c['salute']}"
+                     + (f", {c['riavvii']} riavvii" if c["riavvii"] else ""))
+        if c["stato"] != "running" or c["salute"] == "unhealthy":
+            avvisi.append(f"{c['nome']} {c['stato']} {c['salute']}")
+    if not cs:
+        righe.append("(nessun container assegnato a questo codice)")
+    righe.append("\n## Avvisi\n" + ("\n".join("⚠ " + a for a in avvisi) if avvisi else "nessuno"))
+    return "\n".join(righe)
+
+
+def _log_ristretto(perm, dove, n, extra):
+    if _puo_container(perm, dove):
+        return _journal([f"CONTAINER_NAME={dove}", *extra], n)
+    unita = dove if "." in dove else dove + ".service"
+    if _puo_unita(perm, unita):
+        return _journal(["-u", unita, *extra], n)
+    return f"«{dove}» non è tra quelli che questo codice può vedere."
+
+
+def _risorse_ristrette(perm):
+    if not perm.get("macchina"):
+        return "Questo codice non vede la salute della macchina."
+    return {**_risorse(), "dischi": [{k: d[k] for k in ("montato_su", "uso_pct", "libero_gb", "totale_gb")}
+                                     for d in _stato_host().get("dischi", [])]}
+
 
 @mcp.tool()
 def riassunto(ctx: Context) -> str:
@@ -332,33 +401,37 @@ def riassunto(ctx: Context) -> str:
             righe.append(f"⚠ il raccoglitore non aggiorna da {_durata(h['eta_secondi'])} (dovrebbe ogni {OGNI_MINUTI} minuti): "
                          "lavori, SSH, servizi, container e utenti sono vecchi")
         return "\n".join(righe)
-    return _uscita(ctx, "riassunto", {}, f)
+    return _uscita(ctx, "riassunto", {}, f, _riassunto_ristretto)
 
 
 @mcp.tool()
 def container(ctx: Context, nome: str = "") -> str:
     """Container Docker: senza nome l'elenco di tutti (stato, da quanto, salute, riavvii, porte); con un nome il
     dettaglio (comando, utente, limiti, montaggi, ultimi controlli di salute)."""
-    return _uscita(ctx, "container", {"nome": nome}, lambda: _containers(nome or None) or f"Nessun container «{nome}».")
+    return _uscita(ctx, "container", {"nome": nome}, lambda: _containers(nome or None) or f"Nessun container «{nome}».",
+                   lambda perm: _container_ristretti(perm, nome or None) or f"Nessun container «{nome}» tra i tuoi.")
 
 
 @mcp.tool()
 def log(ctx: Context, dove: str, righe: int = 50, cerca: str = "", da_minuti: int = 0) -> str:
     """Ultime righe di log (max 200) di un container Docker (nome) o di un servizio systemd (es. «ssh», «docker»,
     «fail2ban.service»). `cerca` filtra (espressione regolare), `da_minuti` limita al periodo. Segreti nascosti."""
+    n = max(1, min(int(righe), MAX_RIGHE))
+    extra = ["--grep", cerca] if cerca else []
+    if da_minuti:
+        extra += ["--since", f"-{int(da_minuti)}min"]
+    valido = bool(re.fullmatch(r"[\w.@:-]{1,80}", dove))
+
     def f():
-        n = max(1, min(int(righe), MAX_RIGHE))
-        if not re.fullmatch(r"[\w.@:-]{1,80}", dove):
+        if not valido:
             return "Nome non valido."
-        extra = ["--grep", cerca] if cerca else []
-        if da_minuti:
-            extra += ["--since", f"-{int(da_minuti)}min"]
         nomi = {c["nome"] for c in (_stato_host().get("docker") or [])}
         if dove in nomi:
             return _journal([f"CONTAINER_NAME={dove}", *extra], n)
         unita = dove if "." in dove else dove + ".service"
         return _journal(["-u", unita, *extra], n)
-    return _uscita(ctx, "log", {"dove": dove, "righe": righe, "cerca": cerca, "da_minuti": da_minuti}, f)
+    return _uscita(ctx, "log", {"dove": dove, "righe": righe, "cerca": cerca, "da_minuti": da_minuti}, f,
+                   lambda perm: _log_ristretto(perm, dove, n, extra) if valido else "Nome non valido.")
 
 
 @mcp.tool()
@@ -386,7 +459,7 @@ def risorse(ctx: Context) -> str:
     def f():
         h = _stato_host()
         return {**_risorse(), "dischi": h.get("dischi"), "gpu": h.get("gpu")}
-    return _uscita(ctx, "risorse", {}, f)
+    return _uscita(ctx, "risorse", {}, f, _risorse_ristrette)
 
 
 @mcp.tool()
@@ -501,8 +574,10 @@ def app():
             await send({"type": "http.response.body", "body": b"404"})
             return
         intestazioni = [(k, v) for k, v in scope["headers"] if not k.startswith(b"x-connettore-")]
+        permessi = {k: voce.get(k) for k in ("container", "servizi", "macchina") if k in voce}
         intestazioni += [(b"x-connettore-chi", voce["nome"].encode()), (b"x-connettore-profilo", voce["profilo"].encode()),
-                         (b"x-connettore-ip", ip.encode())]
+                         (b"x-connettore-ip", ip.encode()),
+                         (b"x-connettore-permessi", json.dumps(permessi, ensure_ascii=True).encode())]
         scope = {**scope, "path": "/mcp", "raw_path": b"/mcp", "headers": intestazioni}
         return await interna(scope, receive, send)
 

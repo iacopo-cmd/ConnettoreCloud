@@ -23,11 +23,12 @@ COME È FATTO
 - Il server MCP in un container non root, file system in sola lettura, senza capability, senza socket Docker.
 - Indirizzo /c/<codice>/mcp: il codice dice chi sei, sul disco c'è solo la sua impronta. Codice sbagliato = 404,
   pronto per fail2ban. Filtro dei segreti su tutto quello che esce. Ogni chiamata registrata, senza il codice.
+- Profili: root (vede tutto) e ristretto (solo i container e i servizi assegnati, i loro log e la salute generale
+  della macchina).
 - Si installa da solo: git clone e installa/installa-tutto.sh. Parte solo su 127.0.0.1; l'uscita pubblica in https
   si decide a mano (vedi LEGGIMI.md).
 
 COSA MANCA (prossime versioni)
-- Profili ristretti: codici che vedono solo una parte della macchina (per esempio solo certi container).
 - Prove su più macchine e più distribuzioni.
 - Uso dentro una VPN per le macchine che non devono stare su internet.
 - Versione 2: strumenti che scrivono (riavviare un servizio...), ognuno con conferma esplicita. Solo dopo che la
