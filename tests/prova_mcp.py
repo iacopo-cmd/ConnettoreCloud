@@ -68,6 +68,14 @@ for nome, url, atteso in [("codice sbagliato", base + "/c/" + "x" * 43 + "/mcp",
     except urllib.error.HTTPError as e:
         c = e.code
     esito(f"{nome} → {atteso}", c == atteso, str(c))
+codice = URL.split("/c/")[1].split("/")[0]
+for scoperta in ["/.well-known/oauth-protected-resource", f"/.well-known/oauth-protected-resource/c/{codice}/mcp",
+                 "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"]:
+    try:
+        urllib.request.urlopen(base + scoperta, timeout=5); c = 200
+    except urllib.error.HTTPError as e:
+        c = e.code
+    esito(f"scoperta OAuth {scoperta.split('/c/')[0]} → 404", c == 404, str(c))
 req = urllib.request.Request(URL, data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
                              headers={"content-type": "application/json", "accept": "application/json, text/event-stream", "host": "cattivo.example"})
 try:

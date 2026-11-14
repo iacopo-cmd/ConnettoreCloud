@@ -565,11 +565,18 @@ def app():
         if scope["type"] != "http":
             return
         ip = (scope.get("client") or ("?", 0))[0]
-        m = re.fullmatch(r"/c/([A-Za-z0-9_-]{16,128})/mcp/?", scope.get("path", ""))
+        percorso = scope.get("path", "")
+        if percorso.startswith("/.well-known/") or percorso in ("/favicon.ico", "/robots.txt"):
+            # claude.ai cerca l'OAuth prima di collegarsi: 404 senza contarlo come errore (niente fail2ban),
+            # e senza scrivere il percorso (può contenere il codice)
+            await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": b"404"})
+            return
+        m = re.fullmatch(r"/c/([A-Za-z0-9_-]{16,128})/mcp/?", percorso)
         voce = codici.get(hashlib.sha256(m.group(1).encode()).hexdigest()) if m else None
         if not voce or voce.get("spento"):
             sbagliati[ip] = sbagliati.get(ip, 0) + 1
-            print(json.dumps({"connettore": {"rifiutato": ip, "percorso": "/c/…" if m else scope.get("path", "")[:60]}}), flush=True)
+            print(json.dumps({"connettore": {"rifiutato": ip, "percorso": re.sub(r"/c/[^/]*", "/c/…", percorso)[:60]}}), flush=True)
             await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
             await send({"type": "http.response.body", "body": b"404"})
             return
